@@ -5,20 +5,6 @@ const jwt=require('jsonwebtoken')
 const cors= require('cors')
 require('dotenv').config()
 const cookieParser= require('cookie-parser')
-const mailgun = require("mailgun-js");
-const DOMAIN = "sandbox4c8fbf1523684f779962c3f7240b61be.mailgun.org";
-const mg = mailgun({apiKey: process.env.MAIL_GUN_API_KEY, domain: DOMAIN});
-
-
-
-// const formData = require('form-data');
-// const Mailgun = require('mailgun.js');
-// const mailgun = new Mailgun(formData);
-// const mg = mailgun.client({
-//   username: 'api',
-//   key: process.env.MAIL_GUN_API_KEY,
-// });
-
 
 
 const port= process.env.PORT || 7000;
@@ -26,6 +12,11 @@ const port= process.env.PORT || 7000;
 app.use(cors())
 app.use(express.json())
 app.use(cookieParser())
+
+//mail intergration
+const nodemailer = require('nodemailer');
+const mg = require('nodemailer-mailgun-transport');
+
 
 
 
@@ -65,10 +56,9 @@ async function run() {
 const tran_id = new ObjectId().toString();
 
 app.post('/order', async(req,res)=>{
-  const email= req.query.email;
+  const email= req.body.email;
   const query={email:email}
   const product= await cartsCollection.find(query).toArray();
-
 
   const paymentInfo=req.body;
     const paymentDocs = {
@@ -120,7 +110,7 @@ sslcz.init(data).then(apiResponse => {
 
     const finalOrder={
       product,
-      paidStatus:false,
+      paidStatus:"pending",
       transjectionId:tran_id,
       name: paymentInfo.name,
       email: paymentInfo.email,
@@ -132,58 +122,71 @@ sslcz.init(data).then(apiResponse => {
   
     }
     const result= orderCollection.insertOne(finalOrder)
-    // res.send(result)
-    console.log(result)
     
-
-
-
     console.log('Redirecting to: ', GatewayPageURL)
 });
 
-//success payment
 
+
+//mail intergation
+
+const auth = {
+  auth: {
+    api_key: "333d28e02ffa9daa399a0c8b03b40c06-a2dd40a3-51f0ad54",
+    domain: 'sandboxa651eaa56d454b9a95969c43ce3a3c31.mailgun.org'
+  }
+}
+const nodemailerMailgun = nodemailer.createTransport(mg(auth));
+
+// const emailBody={
+// from: 'myemail@example.com',
+// to: 'asikhosen865575@gmail.com', // An array if you have multiple recipients.
+// subject: 'Hey you, awesome!',
+// text: 'Mailgun rocks, pow pow!'}
+
+// app.get('/emails',async(req,res)=>{
+//   nodemailerMailgun.sendMail(emailBody, (err, info) => {
+//     if (err) {
+//       console.log(`Error: ${err}`);
+//     }
+//     else {
+//       console.log(`Response: ${info}`);
+//     }
+//   });
+//   res.send({status:true})
+
+// })
+
+//success payment
 app.post('/order/success/:transId',async(req,res)=>{
   const result =await orderCollection.updateOne(
     {transjectionId: req.params.transId},
     {
       $set:{
-        paidStatus:true
+        paidStatus:"confirmed"
       }
     }
   );
 
   if(result.modifiedCount >0){
-    // send user email about payment confirmation
-    // mg.messages
-    // .create(process.env.MAIL_SENDING_DOMAIN, {
-    //   from: "Mailgun Sandbox <postmaster@sandboxa651eaa56d454b9a95969c43ce3a3c31.mailgun.org>",
-    //   to: ["asikhosen865575@gmail.com"],
-    //   subject: "E-SHOP Order Confirmation",
-    //   text: "Testing some Mailgun awesomness!",
-    //   html: `
-    //     <div>
-    //       <h2>Thank you for your order</h2>
-    //       <h4>Your Transaction Id: <strong>id hera </strong></h4>
-    //       <p>We would like to get your feedback about the food</p>
-    //     </div>
-    //   `
-    // })
-    // .then(msg => console.log(msg)) // logs response data
-    // .catch(err => console.log(err)); // logs any error`;
-
-    const data = {
-      from: "Mailgun Sandbox <postmaster@sandbox4c8fbf1523684f779962c3f7240b61be.mailgun.org>",
-      to: "ahkctr1234@gmail.com",
-      subject: "Hello",
-      text: "Testing some Mailgun awesomness!"
-    };
-  
-mg.messages().send(data, function (error, body) {
-	console.log(body);
-})
-
+    
     res.redirect(`http://localhost:5173/dashboard/order/success/${req.params.transId}`)
+    nodemailerMailgun?.sendMail({
+      from: 'eshop@gmail.com',
+      to: 'asikhosen865575@gmail.com', // An array if you have multiple recipients.
+      subject: 'E-shop payment succesfully',
+      // text:`Thanks abr asben ${req.params.name}`,
+      html: `<div>
+        <h1>My Transaction Id: ${req.params.transId}</h1> 
+      </div>`
+    }, (err, info) => {
+      if (err) {
+        console.log(`Error: ${err}`);
+      }
+      else {
+        console.log(`Response: ${info}`);
+      }
+    });
      
     
   }
@@ -197,7 +200,9 @@ mg.messages().send(data, function (error, body) {
 
 //failed payment
 app.post('/order/failed/:transId',async(req,res)=>{
+
   const result =await orderCollection.deleteOne(
+    
     {transjectionId: req.params.transId}
   );
   if(result.deletedCount){
@@ -315,8 +320,20 @@ app.get('/order/success/:email', async (req, res) => {
     //user collection end------
     
     app.get('/product1', async(req,res)=>{
-        const result= await productCollection_1.find().toArray();
-        res.send(result)
+      const limit = Number(req.query.limit);
+      const pageNumber = Number(req.query.pageNumber);
+
+      const cursor =  productCollection_1.find();
+      const products = await cursor.skip(limit*pageNumber).limit(limit).toArray();
+      const count = await productCollection_1.estimatedDocumentCount();
+
+      if(!products?.length){
+        return res.send({success: false, error: "No product found"});
+      }
+      res.send({success: true, data: products,count:count})
+
+        // const result= await productCollection_1.find().toArray();
+        // res.send(result)
     })
 
     app.get('/product1/:id', async(req,res)=>{
@@ -326,7 +343,7 @@ app.get('/order/success/:email', async (req, res) => {
       res.send(result)
     } )
 
-    app.patch('/product1/:id',verifyToken,verifyAdmin, async(req,res)=>{
+    app.patch('/product1/:id', async(req,res)=>{
       const item=req.body;
       const id=req.params.id;
       const filter= {_id: new ObjectId(id)}
@@ -413,6 +430,42 @@ app.get('/order/success/:email', async (req, res) => {
         orders,
         revenue
       })
+    })
+
+    //
+    app.get('/order-stats', async(req, res) =>{
+      const pipeline = [
+        {
+          $lookup: {
+            from: 'products-1-collection',
+            localField: 'productId',
+            foreignField: '_id',
+            as: 'productIds'
+          }
+        },
+        {
+          $unwind: '$product'
+        },
+        {
+          $group: {
+            _id: '$product.category',
+            quantity: { $sum: 1 },
+            revenu: { $sum: '$product.price' }
+          }
+        },
+        {
+          $project: {
+            category: '$_id',
+            quantity: 1,
+            revenu: '$revenu',
+            _id: 0
+          }
+        }
+      ];
+
+      const result = await orderCollection.aggregate(pipeline).toArray()
+      res.send(result)
+
     })
 
 
